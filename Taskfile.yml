@@ -9,3 +9,6 @@ tasks:
   podman-build:
     cmds:
     - podman build -t vehicle-cache:latest .
+  run:
+   cmds:
+    - ./vehicle-cache-bin
