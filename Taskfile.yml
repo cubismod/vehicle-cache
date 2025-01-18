@@ -1,0 +1,11 @@
+version: '3'
+
+dotenv: ['.env']
+
+tasks:
+  build:
+    cmds:
+    - CGO_ENABLED=0 go build -o vehicle-cache-bin ./vehicle-cache
+  podman-build:
+    cmds:
+    - podman build -t vehicle-cache:latest .
