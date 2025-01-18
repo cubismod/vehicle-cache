@@ -70,6 +70,11 @@ func main() {
 	go check_updates(repo)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		for name, values := range r.Header {
+			for _, value := range values {
+				log.Printf("{'%s': '%s'}", name, value)
+			}
+		}
 		log.Printf("Received request: %s %s from %s\n",
 			r.Method, r.URL.Path, r.RemoteAddr)
 		http.ServeFile(w, r, fmt.Sprintf("%s/%s", git_dir, git_file))
