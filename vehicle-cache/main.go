@@ -1,13 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
+	"github.com/dgraph-io/ristretto"
+	"github.com/eko/gocache/lib/v4/cache"
+	ristretto_store "github.com/eko/gocache/store/ristretto/v4"
 	"github.com/go-git/go-git/v5"
+	"github.com/tdewolff/minify/v2"
+	"github.com/tdewolff/minify/v2/json"
 )
 
 func getEnv(key string) string {
@@ -41,12 +49,33 @@ func pull(repo *git.Repository) error {
 	return nil
 }
 
-func check_updates(repo *git.Repository) {
+func check_updates(repo *git.Repository, git_dir string, git_file string, cache *cache.Cache[string]) {
+	mediatype := "application/json"
+	m := minify.New()
+	m.AddFuncRegexp(regexp.MustCompile(".+"), json.Minify)
 	for {
 		err := pull(repo)
 		if err != nil {
 			log.Fatal(err)
 		}
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(2*time.Minute))
+		defer cancel()
+
+		file, err := os.ReadFile(fmt.Sprintf("%s/%s", git_dir, git_file))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		s, err := m.String(mediatype, string(file))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = cache.Set(ctx, "out", s)
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		time.Sleep(time.Second * 90)
 	}
 }
@@ -67,7 +96,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	go check_updates(repo)
+	ristrettoCache, err := ristretto.NewCache(&ristretto.Config{
+		NumCounters: 1000,
+		MaxCost:     100,
+		BufferItems: 64,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ristrettoStore := ristretto_store.NewRistretto(ristrettoCache)
+
+	cacheManager := cache.New[string](ristrettoStore)
+
+	go check_updates(repo, git_dir, git_file, cacheManager)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		for name, values := range r.Header {
@@ -77,7 +119,19 @@ func main() {
 		}
 		log.Printf("Received request: %s %s from %s\n",
 			r.Method, r.URL.Path, r.RemoteAddr)
-		http.ServeFile(w, r, fmt.Sprintf("%s/%s", git_dir, git_file))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		defer cancel()
+
+		val, err := cacheManager.Get(ctx, "out")
+		if err != nil {
+			log.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, err = io.WriteString(w, val)
+		if err != nil {
+			log.Fatal(err)
+		}
 	})
 
 	fmt.Println(fmt.Sprintf("Server is running on port %s", http_port))
