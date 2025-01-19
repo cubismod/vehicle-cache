@@ -24,7 +24,8 @@ func getEnv(key string) string {
 
 func clone(repo string, dir string) (*git.Repository, error) {
 	r, err := git.PlainClone(dir, false, &git.CloneOptions{
-		URL: repo,
+		URL:   repo,
+		Depth: 2,
 	})
 	if err != nil {
 		return r, err
