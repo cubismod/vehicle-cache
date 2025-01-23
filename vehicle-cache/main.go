@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/CAFxX/httpcompression"
 	"github.com/dgraph-io/ristretto"
 	"github.com/eko/gocache/lib/v4/cache"
 	ristretto_store "github.com/eko/gocache/store/ristretto/v4"
@@ -110,9 +111,11 @@ func main() {
 
 	cacheManager := cache.New[string](ristrettoStore)
 
+	compress, err := httpcompression.DefaultAdapter()
+
 	go check_updates(repo, git_dir, git_file, cacheManager)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for name, values := range r.Header {
 			for _, value := range values {
 				log.Printf("{'%s': '%s'}", name, value)
@@ -135,6 +138,8 @@ func main() {
 			log.Fatal(err)
 		}
 	})
+
+	http.Handle("/", compress(handler))
 
 	fmt.Println(fmt.Sprintf("Server is running on port %s", http_port))
 	err = http.ListenAndServe(fmt.Sprintf(":%s", http_port), nil)
