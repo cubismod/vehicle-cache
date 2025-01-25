@@ -28,3 +28,5 @@ dl/
 
 __debug*
 vehicle-cache-bin
+shapes.json
+vehicles.json

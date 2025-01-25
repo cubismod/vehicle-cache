@@ -7,113 +7,89 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"time"
 
 	"github.com/CAFxX/httpcompression"
-	"github.com/dgraph-io/ristretto"
-	"github.com/eko/gocache/lib/v4/cache"
-	ristretto_store "github.com/eko/gocache/store/ristretto/v4"
-	"github.com/go-git/go-git/v5"
-	"github.com/tdewolff/minify/v2"
-	"github.com/tdewolff/minify/v2/json"
+	"github.com/alphadose/haxmap"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-func getEnv(key string) string {
-	return os.Getenv(key)
-}
+func download_s3_object(client *minio.Client, bucket string, key string, ctx context.Context) error {
+	f, err := os.Create(key)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 
-func clone(repo string, dir string) (*git.Repository, error) {
-	r, err := git.PlainClone(dir, false, &git.CloneOptions{
-		URL:   repo,
-		Depth: 2,
-	})
+	reader, err := client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
-		return r, err
+		return err
 	}
-	return r, nil
-}
+	defer reader.Close()
 
-func pull(repo *git.Repository) error {
-	w, err := repo.Worktree()
+	stat, err := reader.Stat()
 	if err != nil {
-		return err
+		log.Fatalln(err)
 	}
-	err = w.Pull(&git.PullOptions{})
-	if err != nil && err.Error() != "already up-to-date" {
-		return err
+
+	if _, err := io.CopyN(f, reader, stat.Size); err != nil {
+		log.Fatalln(err)
 	}
-	revision, err := repo.ResolveRevision("HEAD")
-	if err != nil {
-		return err
-	}
-	log.Printf("at revision: %s", revision)
+
+	log.Printf("%s downloaded, %d bytes\n", key, stat.Size)
 	return nil
 }
 
-func check_updates(repo *git.Repository, git_dir string, git_file string, cache *cache.Cache[string]) {
-	mediatype := "application/json"
-	m := minify.New()
-	m.AddFuncRegexp(regexp.MustCompile(".+"), json.Minify)
+func check_updates(data *haxmap.Map[string, string]) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	endpoint := os.Getenv("AWS_ENDPOINT_URL_S3")
+	accessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
+	secretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(accessKeyID, secretAccessKey, ""),
+		Secure: true,
+	})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bucket := os.Getenv("VT_S3_BUCKET")
+	err = download_s3_object(client, bucket, "shapes.json", ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	shapes, err := os.ReadFile("shapes.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	data.Set("shapes", string(shapes))
 	for {
-		err := pull(repo)
+		err := download_s3_object(client, bucket, "vehicles.json", ctx)
 		if err != nil {
 			log.Fatal(err)
 		}
-		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(2*time.Minute))
-		defer cancel()
-
-		file, err := os.ReadFile(fmt.Sprintf("%s/%s", git_dir, git_file))
+		vehicles, err := os.ReadFile("vehicles.json")
 		if err != nil {
 			log.Fatal(err)
 		}
-
-		s, err := m.String(mediatype, string(file))
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		err = cache.Set(ctx, "out", s)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		time.Sleep(time.Second * 90)
+		data.Set("vehicles", string(vehicles))
+		time.Sleep(time.Second * 15)
 	}
 }
 
 func main() {
-	git_repo := os.Getenv("VT_GIT_REPO")
-	git_file := os.Getenv("VT_GIT_FILE")
 	http_port := os.Getenv("VT_HTTP_PORT")
 
-	git_dir, err := os.MkdirTemp(os.TempDir(), "vehicle")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer os.RemoveAll(git_dir)
-
-	repo, err := clone(git_repo, git_dir)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ristrettoCache, err := ristretto.NewCache(&ristretto.Config{
-		NumCounters: 1000,
-		MaxCost:     100,
-		BufferItems: 64,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ristrettoStore := ristretto_store.NewRistretto(ristrettoCache)
-
-	cacheManager := cache.New[string](ristrettoStore)
+	data := haxmap.New[string, string]()
 
 	compress, err := httpcompression.DefaultAdapter()
 
-	go check_updates(repo, git_dir, git_file, cacheManager)
+	go check_updates(data)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for name, values := range r.Header {
@@ -124,12 +100,14 @@ func main() {
 		log.Printf("Received request: %s %s from %s\n",
 			r.Method, r.URL.Path, r.RemoteAddr)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-		defer cancel()
+		key := "vehicles"
+		if r.URL.Path == "/shapes" {
+			key = "shapes"
+		}
 
-		val, err := cacheManager.Get(ctx, "out")
-		if err != nil {
-			log.Fatal(err)
+		val, ok := data.Get(key)
+		if !ok {
+			log.Fatalf("unable to load %s", key)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
