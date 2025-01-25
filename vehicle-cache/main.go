@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -13,15 +14,10 @@ import (
 	"github.com/alphadose/haxmap"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/pkg/errors"
 )
 
 func download_s3_object(client *minio.Client, bucket string, key string, ctx context.Context) error {
-	f, err := os.Create(key)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
 	reader, err := client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return err
@@ -32,6 +28,25 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	sf, err := os.Stat(key)
+	if err == nil {
+		if sf.ModTime() == stat.LastModified {
+			return nil
+		}
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		err = os.Remove(key)
+		if err != nil {
+			return err
+		}
+	}
+
+	f, err := os.Create(key)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 
 	if _, err := io.CopyN(f, reader, stat.Size); err != nil {
 		log.Fatalln(err)
