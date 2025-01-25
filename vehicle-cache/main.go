@@ -31,7 +31,7 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 
 	sf, err := os.Stat(key)
 	if err == nil {
-		if sf.ModTime() == stat.LastModified {
+		if sf.ModTime() == stat.LastModified || sf.Size() == stat.Size {
 			return nil
 		}
 	}
