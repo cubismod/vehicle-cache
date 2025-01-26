@@ -93,7 +93,7 @@ func check_updates(data *haxmap.Map[string, string]) {
 			log.Fatal(err)
 		}
 		data.Set("vehicles", string(vehicles))
-		time.Sleep(time.Second * 15)
+		time.Sleep(time.Second * 20)
 	}
 }
 
