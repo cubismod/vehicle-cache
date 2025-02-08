@@ -97,15 +97,15 @@ func check_updates(data *haxmap.Map[string, string]) {
 				log.Fatal(err)
 			}
 			data.Set("vehicles", string(vehicles))
-			time.Sleep(time.Second * 1)
 		} else {
 			// wait a minute before returning no data
 			runsSinceLastUpdate++
-			if runsSinceLastUpdate >= 60 {
-				data.Set("vehicles", "{\"type\": \"FeatureCollection\", \"features\": []}")
-				time.Sleep(5 * time.Minute)
-			}
 		}
+		if runsSinceLastUpdate >= 60 {
+			data.Set("vehicles", "{\"type\": \"FeatureCollection\", \"features\": []}")
+			time.Sleep(5 * time.Minute)
+		}
+		time.Sleep(time.Second * 2)
 	}
 }
 
