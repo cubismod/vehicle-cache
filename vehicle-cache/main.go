@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/CAFxX/httpcompression"
@@ -136,12 +138,24 @@ func main() {
 		if !ok {
 			log.Fatalf("unable to load %s", key)
 		}
+
+		hash := sha256.New()
+		valReader := strings.NewReader(val)
+		_, err = io.Copy(hash, valReader)
+		if err != nil {
+			log.Fatal(err)
+		}
+		etag := hash.Sum(nil)
+
+		w.Header().Set("ETag", fmt.Sprintf("%x", etag))
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+
 		_, err = io.WriteString(w, val)
 		if err != nil {
 			log.Fatal(err)
 		}
+
 	})
 
 	http.Handle("/", compress(handler))
