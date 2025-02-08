@@ -17,10 +17,11 @@ import (
 	"github.com/pkg/errors"
 )
 
-func download_s3_object(client *minio.Client, bucket string, key string, ctx context.Context) error {
+// downloads an object from S3 and returns a boolean indicating if the file was updated
+func download_s3_object(client *minio.Client, bucket string, key string, ctx context.Context) (bool, error) {
 	reader, err := client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer reader.Close()
 
@@ -32,19 +33,19 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 	sf, err := os.Stat(key)
 	if err == nil {
 		if sf.ModTime() == stat.LastModified || sf.Size() == stat.Size {
-			return nil
+			return false, nil
 		}
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		err = os.Remove(key)
 		if err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	f, err := os.Create(key)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer f.Close()
 
@@ -53,7 +54,7 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 	}
 
 	log.Printf("%s downloaded, %d bytes\n", key, stat.Size)
-	return nil
+	return true, nil
 }
 
 func check_updates(data *haxmap.Map[string, string]) {
@@ -74,7 +75,7 @@ func check_updates(data *haxmap.Map[string, string]) {
 	}
 
 	bucket := os.Getenv("VT_S3_BUCKET")
-	err = download_s3_object(client, bucket, "shapes.json", ctx)
+	_, err = download_s3_object(client, bucket, "shapes.json", ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -84,16 +85,21 @@ func check_updates(data *haxmap.Map[string, string]) {
 	}
 	data.Set("shapes", string(shapes))
 	for {
-		err := download_s3_object(client, bucket, "vehicles.json", ctx)
+		updated, err := download_s3_object(client, bucket, "vehicles.json", ctx)
 		if err != nil {
 			log.Fatal(err)
 		}
-		vehicles, err := os.ReadFile("vehicles.json")
-		if err != nil {
-			log.Fatal(err)
+		if updated {
+			vehicles, err := os.ReadFile("vehicles.json")
+			if err != nil {
+				log.Fatal(err)
+			}
+			data.Set("vehicles", string(vehicles))
+			time.Sleep(time.Second * 1)
+		} else {
+			data.Set("vehicles", "{}")
+			time.Sleep(5 * time.Minute)
 		}
-		data.Set("vehicles", string(vehicles))
-		time.Sleep(time.Second * 1)
 	}
 }
 
