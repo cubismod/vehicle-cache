@@ -84,12 +84,14 @@ func check_updates(data *haxmap.Map[string, string]) {
 		log.Fatal(err)
 	}
 	data.Set("shapes", string(shapes))
+	runsSinceLastUpdate := 0
 	for {
 		updated, err := download_s3_object(client, bucket, "vehicles.json", ctx)
 		if err != nil {
 			log.Fatal(err)
 		}
 		if updated {
+			runsSinceLastUpdate = 0
 			vehicles, err := os.ReadFile("vehicles.json")
 			if err != nil {
 				log.Fatal(err)
@@ -97,8 +99,12 @@ func check_updates(data *haxmap.Map[string, string]) {
 			data.Set("vehicles", string(vehicles))
 			time.Sleep(time.Second * 1)
 		} else {
-			data.Set("vehicles", "{\"type\": \"FeatureCollection\", \"features\": []}")
-			time.Sleep(5 * time.Minute)
+			// wait a minute before returning no data
+			runsSinceLastUpdate++
+			if runsSinceLastUpdate >= 60 {
+				data.Set("vehicles", "{\"type\": \"FeatureCollection\", \"features\": []}")
+				time.Sleep(5 * time.Minute)
+			}
 		}
 	}
 }
