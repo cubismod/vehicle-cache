@@ -97,7 +97,7 @@ func check_updates(data *haxmap.Map[string, string]) {
 			data.Set("vehicles", string(vehicles))
 			time.Sleep(time.Second * 1)
 		} else {
-			data.Set("vehicles", "{}")
+			data.Set("vehicles", "{\"type\": \"FeatureCollection\", \"features\": []}")
 			time.Sleep(5 * time.Minute)
 		}
 	}
