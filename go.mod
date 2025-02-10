@@ -5,7 +5,7 @@ go 1.23.2
 require (
 	github.com/CAFxX/httpcompression v0.0.9
 	github.com/alphadose/haxmap v1.4.1
-	github.com/minio/minio-go/v7 v7.0.84
+	github.com/minio/minio-go/v7 v7.0.85
 	github.com/pkg/errors v0.9.1
 )
 
