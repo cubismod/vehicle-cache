@@ -1,6 +1,6 @@
 module vehicle-cache
 
-go 1.23.2
+go 1.24.0
 
 require (
 	github.com/CAFxX/httpcompression v0.0.9
