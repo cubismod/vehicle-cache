@@ -3,7 +3,7 @@ FROM golang:1.24.0 AS builder
 WORKDIR /build
 COPY . .
 
-RUN CGO_ENABLED=0 go build -o vehicle-cache-bin ./vehicle-cache
+RUN CGO_ENABLED=0 go build -buildvcs=false -o vehicle-cache-bin ./vehicle-cache
 
 FROM golang:1.24.0 AS prod
 
