@@ -31,3 +31,4 @@ vehicle-cache-bin
 prod.env
 shapes.json
 vehicles.json
+alerts.json

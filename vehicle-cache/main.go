@@ -60,6 +60,21 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 	return true, stat.ETag, nil
 }
 
+func get_file_contents(filename string, ctx context.Context, client *minio.Client, bucket string) string {
+	updated, _, err := download_s3_object(client, bucket, filename, ctx, "")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if updated {
+		fileContents, err := os.ReadFile(filename)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return string(fileContents)
+	}
+	return ""
+}
+
 func check_updates(data *haxmap.Map[string, string]) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -89,23 +104,19 @@ func check_updates(data *haxmap.Map[string, string]) {
 	}
 	data.Set("shapes", string(shapes))
 	runsSinceLastUpdate := 0
-	updated := false
 	for {
-		updated, objEtag, err = download_s3_object(client, bucket, "vehicles.json", ctx, objEtag)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if updated {
+		vehicleUpdate := get_file_contents("vehicles.json", ctx, client, bucket)
+		if vehicleUpdate != "" {
+			data.Set("vehicles", string(vehicleUpdate))
 			runsSinceLastUpdate = 0
-			vehicles, err := os.ReadFile("vehicles.json")
-			if err != nil {
-				log.Fatal(err)
-			}
-			data.Set("vehicles", string(vehicles))
 		} else {
-			// wait a minute before returning no data
 			runsSinceLastUpdate++
 		}
+		alertsUpdate := get_file_contents("alerts.json", ctx, client, bucket)
+		if alertsUpdate != "" {
+			data.Set("alerts", string(alertsUpdate))
+		}
+
 		if runsSinceLastUpdate >= 60 {
 			data.Set("vehicles", "{\"type\": \"FeatureCollection\", \"features\": []}")
 			time.Sleep(time.Duration(runsSinceLastUpdate) * time.Second)
@@ -135,6 +146,10 @@ func main() {
 		key := "vehicles"
 		if r.URL.Path == "/shapes" {
 			key = "shapes"
+		}
+
+		if r.URL.Path == "/alerts" {
+			key = "alerts"
 		}
 
 		val, ok := data.Get(key)
