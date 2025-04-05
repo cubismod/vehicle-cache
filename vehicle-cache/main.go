@@ -84,31 +84,36 @@ func get_file_contents(filename string, ctx context.Context, client *minio.Clien
 	return ""
 }
 
+type fileDef struct {
+	envName string
+	local   string
+}
+
 func check_updates(data *haxmap.Map[string, string], prefix string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shapesFile := fmt.Sprintf("%sshapes.json", prefix)
-	alertsFile := fmt.Sprintf("%salerts.json", prefix)
-	vehiclesFile := fmt.Sprintf("%svehicles.json", prefix)
-
 	endpoint := os.Getenv("AWS_ENDPOINT_URL_S3")
 	accessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
 	secretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
-
 	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKeyID, secretAccessKey, ""),
 		Secure: true,
 	})
-
 	if err != nil {
 		log.Fatal().Err(err)
 	}
-	objEtag := ""
-
 	bucket := os.Getenv("VT_S3_BUCKET")
-	_, _, err = download_s3_object(client, bucket, shapesFile, ctx, objEtag)
-	if err != nil {
+
+	files := []fileDef{
+		{"shapes", "shapes.json"},
+		{"alerts", "alerts.json"},
+		{"vehicles", "vehicles.json"},
+	}
+
+	// Preload shapes file.
+	shapesFile := fmt.Sprintf("%s%s", prefix, files[0].local)
+	if _, _, err = download_s3_object(client, bucket, shapesFile, ctx, ""); err != nil {
 		log.Fatal().Err(err)
 	}
 	shapes, err := os.ReadFile(shapesFile)
@@ -119,24 +124,22 @@ func check_updates(data *haxmap.Map[string, string], prefix string) {
 
 	runsSinceLastUpdate := 0
 	for {
-		vehicleUpdate := get_file_contents(vehiclesFile, ctx, client, bucket)
-		if vehicleUpdate != "" {
-			data.Set(vehiclesFile, string(vehicleUpdate))
-			runsSinceLastUpdate = 0
-		} else {
-			runsSinceLastUpdate++
+		for _, f := range files[1:] {
+			filePath := fmt.Sprintf("%s%s", prefix, f.local)
+			update := get_file_contents(filePath, ctx, client, bucket)
+			if update != "" {
+				data.Set(filePath, update)
+				runsSinceLastUpdate = 0
+			}
 		}
-
-		alertsUpdate := get_file_contents(alertsFile, ctx, client, bucket)
-		if alertsUpdate != "" {
-			data.Set(alertsFile, string(alertsUpdate))
-		}
-
 		if runsSinceLastUpdate >= 60 {
-			data.Set(vehicleUpdate, "{\"type\": \"FeatureCollection\", \"features\": []}")
+			// Reset vehicles JSON if needed.
+			vehiclesPath := fmt.Sprintf("%s%s", prefix, files[2].local)
+			data.Set(vehiclesPath, "{\"type\": \"FeatureCollection\", \"features\": []}")
 			time.Sleep(time.Duration(runsSinceLastUpdate) * time.Second)
 		}
-		time.Sleep(time.Second * 1)
+		runsSinceLastUpdate++
+		time.Sleep(2 * time.Second)
 	}
 }
 
