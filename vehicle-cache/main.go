@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
 	"github.com/CAFxX/httpcompression"
 	"github.com/alphadose/haxmap"
@@ -30,7 +34,8 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 
 	stat, err := reader.Stat()
 	if err != nil {
-		log.Fatalln(err)
+		log.Error().Err(err)
+		return false, "", err
 	}
 
 	sf, err := os.Stat(key)
@@ -42,6 +47,7 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 	if !errors.Is(err, fs.ErrNotExist) {
 		err = os.Remove(key)
 		if err != nil {
+			log.Error().Err(err)
 			return false, "", err
 		}
 	}
@@ -53,31 +59,38 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 	defer f.Close()
 
 	if _, err := io.CopyN(f, reader, stat.Size); err != nil {
-		log.Fatalln(err)
+		log.Error().Err(err)
+		return false, "", err
 	}
 
-	log.Printf("%s downloaded, %d bytes\n", key, stat.Size)
+	log.Info().Msgf("%s downloaded, %d bytes\n", key, stat.Size)
 	return true, stat.ETag, nil
 }
 
 func get_file_contents(filename string, ctx context.Context, client *minio.Client, bucket string) string {
 	updated, _, err := download_s3_object(client, bucket, filename, ctx, "")
 	if err != nil {
-		log.Fatal(err)
+		log.Error().Err(err)
+		return ""
 	}
 	if updated {
 		fileContents, err := os.ReadFile(filename)
 		if err != nil {
-			log.Fatal(err)
+			log.Error().Err(err)
+			return ""
 		}
 		return string(fileContents)
 	}
 	return ""
 }
 
-func check_updates(data *haxmap.Map[string, string]) {
+func check_updates(data *haxmap.Map[string, string], prefix string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	shapesFile := fmt.Sprintf("%sshapes.json", prefix)
+	alertsFile := fmt.Sprintf("%salerts.json", prefix)
+	vehiclesFile := fmt.Sprintf("%svehicles.json", prefix)
 
 	endpoint := os.Getenv("AWS_ENDPOINT_URL_S3")
 	accessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
@@ -89,79 +102,114 @@ func check_updates(data *haxmap.Map[string, string]) {
 	})
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err)
 	}
 	objEtag := ""
 
 	bucket := os.Getenv("VT_S3_BUCKET")
-	_, _, err = download_s3_object(client, bucket, "shapes.json", ctx, objEtag)
+	_, _, err = download_s3_object(client, bucket, shapesFile, ctx, objEtag)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err)
 	}
-	shapes, err := os.ReadFile("shapes.json")
+	shapes, err := os.ReadFile(shapesFile)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err)
 	}
-	data.Set("shapes", string(shapes))
+	data.Set(shapesFile, string(shapes))
+
 	runsSinceLastUpdate := 0
 	for {
-		vehicleUpdate := get_file_contents("vehicles.json", ctx, client, bucket)
+		vehicleUpdate := get_file_contents(vehiclesFile, ctx, client, bucket)
 		if vehicleUpdate != "" {
-			data.Set("vehicles", string(vehicleUpdate))
+			data.Set(vehiclesFile, string(vehicleUpdate))
 			runsSinceLastUpdate = 0
 		} else {
 			runsSinceLastUpdate++
 		}
-		alertsUpdate := get_file_contents("alerts.json", ctx, client, bucket)
+
+		alertsUpdate := get_file_contents(alertsFile, ctx, client, bucket)
 		if alertsUpdate != "" {
-			data.Set("alerts", string(alertsUpdate))
+			data.Set(alertsFile, string(alertsUpdate))
 		}
 
 		if runsSinceLastUpdate >= 60 {
-			data.Set("vehicles", "{\"type\": \"FeatureCollection\", \"features\": []}")
+			data.Set(vehicleUpdate, "{\"type\": \"FeatureCollection\", \"features\": []}")
 			time.Sleep(time.Duration(runsSinceLastUpdate) * time.Second)
 		}
 		time.Sleep(time.Second * 1)
 	}
 }
 
+// cleans up all the .json files in local dir
+func cleanup() {
+	jsonFiles, err := filepath.Glob("*.json")
+	if err != nil {
+		return
+	}
+	for _, e := range jsonFiles {
+		_ = os.Remove(e)
+	}
+}
+
 func main() {
-	http_port := os.Getenv("VT_HTTP_PORT")
+	cleanup()
+	debug := flag.Bool("debug", false, "sets log level to debug")
+
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if *debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+	httpPort := os.Getenv("VT_HTTP_PORT")
 
 	data := haxmap.New[string, string]()
 
 	compress, err := httpcompression.DefaultAdapter()
 
-	go check_updates(data)
+	go check_updates(data, "")
+	go check_updates(data, "dev_")
+
+	errStr := "unable to load data"
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for name, values := range r.Header {
 			for _, value := range values {
-				log.Printf("{'%s': '%s'}", name, value)
+				log.Debug().Msgf("{'%s': '%s'}", name, value)
 			}
 		}
-		log.Printf("Received request: %s %s from %s\n",
+		log.Info().Msgf("Received request: %s %s from %s\n",
 			r.Method, r.URL.Path, r.RemoteAddr)
 
 		key := "vehicles"
+		if r.URL.Path == "/dev/vehicles" || r.URL.Path == "/dev" || r.URL.Path == "/dev/" {
+			key = "dev_vehicles"
+		}
 		if r.URL.Path == "/shapes" {
 			key = "shapes"
 		}
-
+		if r.URL.Path == "/dev/shapes" {
+			key = "dev_shapes"
+		}
 		if r.URL.Path == "/alerts" {
 			key = "alerts"
 		}
+		if r.URL.Path == "/dev/alerts" {
+			key = "dev_alerts"
+		}
 
-		val, ok := data.Get(key)
+		val, ok := data.Get(fmt.Sprintf("%s.json", key))
 		if !ok {
-			log.Fatalf("unable to load %s", key)
+			log.Error().Msgf("unable to load %s", key)
+			http.Error(w, errStr, http.StatusInternalServerError)
+			return
 		}
 
 		hash := sha256.New()
 		valReader := strings.NewReader(val)
 		_, err = io.Copy(hash, valReader)
 		if err != nil {
-			log.Fatal(err)
+			log.Error().Msgf("unable to load %s", key)
+			http.Error(w, errStr, http.StatusInternalServerError)
+			return
 		}
 		etag := hash.Sum(nil)
 
@@ -171,16 +219,18 @@ func main() {
 
 		_, err = io.WriteString(w, val)
 		if err != nil {
-			log.Fatal(err)
+			log.Error().Err(err)
+			http.Error(w, errStr, http.StatusInternalServerError)
+			return
 		}
 
 	})
 
 	http.Handle("/", compress(handler))
 
-	fmt.Println(fmt.Sprintf("Server is running on port %s", http_port))
-	err = http.ListenAndServe(fmt.Sprintf(":%s", http_port), nil)
+	fmt.Printf("Server is running on port %s", httpPort)
+	err = http.ListenAndServe(fmt.Sprintf(":%s", httpPort), nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err)
 	}
 }
