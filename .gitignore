@@ -29,6 +29,6 @@ dl/
 __debug*
 vehicle-cache-bin
 prod.env
-shapes.json
-vehicles.json
-alerts.json
+*shapes.json
+*vehicles.json
+*alerts.json
