@@ -151,7 +151,34 @@ func cleanup() {
 	}
 }
 
+func resolveKey(urlPath string) string {
+	var routeMap = map[string]string{
+		"/alerts":   "alerts",
+		"/shapes":   "shapes",
+		"/":         "vehicles",
+		"/vehicles": "vehicles",
+	}
+	isDev := strings.HasPrefix(urlPath, "/dev")
+	path := urlPath
+	if isDev {
+		// Remove "/dev" prefix for lookup
+		path = strings.TrimPrefix(urlPath, "/dev")
+		if path == "" {
+			path = "/vehicles"
+		}
+	}
+	if key, ok := routeMap[path]; ok {
+		if isDev {
+			return "dev_" + key
+		}
+		return key
+	}
+	return "vehicles" // default
+}
+
 func main() {
+	flag.Parse()
+
 	cleanup()
 	debug := flag.Bool("debug", false, "sets log level to debug")
 
@@ -179,30 +206,13 @@ func main() {
 		log.Info().Msgf("Received request: %s %s from %s\n",
 			r.Method, r.URL.Path, r.RemoteAddr)
 
-		key := "vehicles"
-		if r.URL.Path == "/dev/vehicles" || r.URL.Path == "/dev" || r.URL.Path == "/dev/" {
-			key = "dev_vehicles"
-		}
-		if r.URL.Path == "/shapes" {
-			key = "shapes"
-		}
-		if r.URL.Path == "/dev/shapes" {
-			key = "dev_shapes"
-		}
-		if r.URL.Path == "/alerts" {
-			key = "alerts"
-		}
-		if r.URL.Path == "/dev/alerts" {
-			key = "dev_alerts"
-		}
-
+		key := resolveKey(r.URL.Path)
 		val, ok := data.Get(fmt.Sprintf("%s.json", key))
 		if !ok {
 			log.Error().Msgf("unable to load %s", key)
-			http.Error(w, errStr, http.StatusInternalServerError)
+			http.Error(w, "unable to load data", http.StatusInternalServerError)
 			return
 		}
-
 		hash := sha256.New()
 		valReader := strings.NewReader(val)
 		_, err = io.Copy(hash, valReader)
