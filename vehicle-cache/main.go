@@ -21,11 +21,34 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+type metrics struct {
+	refreshCounter *prometheus.CounterVec
+	httpRequests   *prometheus.CounterVec
+}
+
+func NewMetrics(reg prometheus.Registerer) *metrics {
+	m := &metrics{
+		refreshCounter: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vc_refreshes",
+			Help: "s3 refreshes by key",
+		}, []string{"key"}),
+		httpRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vc_http_reqs",
+			Help: "http requests",
+		}, []string{"path", "method", "status", "useragent"}),
+	}
+	reg.MustRegister(m.refreshCounter)
+	reg.MustRegister(m.httpRequests)
+	return m
+}
 
 // downloads an object from S3
 // returns boolean indicating if it changed, etag value, error
-func download_s3_object(client *minio.Client, bucket string, key string, ctx context.Context, etag string) (bool, string, error) {
+func downloadS3Object(client *minio.Client, bucket string, key string, ctx context.Context, etag string, metrics *metrics) (bool, string, error) {
 	reader, err := client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return false, "", err
@@ -64,11 +87,12 @@ func download_s3_object(client *minio.Client, bucket string, key string, ctx con
 	}
 
 	log.Info().Msgf("%s downloaded, %d bytes\n", key, stat.Size)
+	metrics.refreshCounter.With(prometheus.Labels{"key": key}).Inc()
 	return true, stat.ETag, nil
 }
 
-func get_file_contents(filename string, ctx context.Context, client *minio.Client, bucket string) string {
-	updated, _, err := download_s3_object(client, bucket, filename, ctx, "")
+func getFileContents(filename string, ctx context.Context, client *minio.Client, bucket string, metrics *metrics) string {
+	updated, _, err := downloadS3Object(client, bucket, filename, ctx, "", metrics)
 	if err != nil {
 		log.Error().Err(err)
 		return ""
@@ -89,7 +113,7 @@ type fileDef struct {
 	local   string
 }
 
-func check_updates(data *haxmap.Map[string, string], prefix string) {
+func checkUpdates(data *haxmap.Map[string, string], prefix string, metrics *metrics) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -113,7 +137,7 @@ func check_updates(data *haxmap.Map[string, string], prefix string) {
 
 	// Preload shapes file.
 	shapesFile := fmt.Sprintf("%s%s", prefix, files[0].local)
-	if _, _, err = download_s3_object(client, bucket, shapesFile, ctx, ""); err != nil {
+	if _, _, err = downloadS3Object(client, bucket, shapesFile, ctx, "", metrics); err != nil {
 		log.Fatal().Err(err)
 	}
 	shapes, err := os.ReadFile(shapesFile)
@@ -126,7 +150,7 @@ func check_updates(data *haxmap.Map[string, string], prefix string) {
 	for {
 		for _, f := range files[1:] {
 			filePath := fmt.Sprintf("%s%s", prefix, f.local)
-			update := get_file_contents(filePath, ctx, client, bucket)
+			update := getFileContents(filePath, ctx, client, bucket, metrics)
 			if update != "" {
 				data.Set(filePath, update)
 				runsSinceLastUpdate = 0
@@ -176,11 +200,14 @@ func resolveKey(urlPath string) string {
 		}
 		return key
 	}
-	return "vehicles" // default
+	return "" // default
 }
 
 func main() {
 	flag.Parse()
+
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
 
 	cleanup()
 	debug := flag.Bool("debug", false, "sets log level to debug")
@@ -195,8 +222,8 @@ func main() {
 
 	compress, err := httpcompression.DefaultAdapter()
 
-	go check_updates(data, "")
-	go check_updates(data, "dev_")
+	go checkUpdates(data, "", m)
+	go checkUpdates(data, "dev_", m)
 
 	errStr := "unable to load data"
 
@@ -212,15 +239,17 @@ func main() {
 		key := resolveKey(r.URL.Path)
 		val, ok := data.Get(fmt.Sprintf("%s.json", key))
 		if !ok {
-			log.Error().Msgf("unable to load %s", key)
-			http.Error(w, "unable to load data", http.StatusInternalServerError)
+			log.Error().Err(err)
+			m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": "404", "useragent": r.UserAgent()}).Inc()
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		hash := sha256.New()
 		valReader := strings.NewReader(val)
 		_, err = io.Copy(hash, valReader)
 		if err != nil {
-			log.Error().Msgf("unable to load %s", key)
+			log.Error().Err(err)
+			m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": "500", "useragent": r.UserAgent()}).Inc()
 			http.Error(w, errStr, http.StatusInternalServerError)
 			return
 		}
@@ -230,15 +259,18 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
+		m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": "200", "useragent": r.UserAgent()}).Inc()
 		_, err = io.WriteString(w, val)
 		if err != nil {
 			log.Error().Err(err)
+			m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": "500", "useragent": r.UserAgent()}).Inc()
 			http.Error(w, errStr, http.StatusInternalServerError)
 			return
 		}
 
 	})
 
+	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 	http.Handle("/", compress(handler))
 
 	fmt.Printf("Server is running on port %s", httpPort)
