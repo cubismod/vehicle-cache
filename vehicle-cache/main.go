@@ -28,6 +28,7 @@ import (
 type metrics struct {
 	refreshCounter *prometheus.CounterVec
 	httpRequests   *prometheus.CounterVec
+	fileSizes      *prometheus.GaugeVec
 }
 
 func NewMetrics(reg prometheus.Registerer) *metrics {
@@ -40,9 +41,14 @@ func NewMetrics(reg prometheus.Registerer) *metrics {
 			Name: "vc_http_reqs",
 			Help: "http requests",
 		}, []string{"path", "method", "status", "useragent"}),
+		fileSizes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "vc_file_sizes",
+			Help: "size of each .json file in bytes",
+		}, []string{"key"}),
 	}
 	reg.MustRegister(m.refreshCounter)
 	reg.MustRegister(m.httpRequests)
+	reg.MustRegister(m.fileSizes)
 	return m
 }
 
@@ -88,6 +94,7 @@ func downloadS3Object(client *minio.Client, bucket string, key string, ctx conte
 
 	log.Info().Msgf("%s downloaded, %d bytes\n", key, stat.Size)
 	metrics.refreshCounter.With(prometheus.Labels{"key": key}).Inc()
+	metrics.fileSizes.With(prometheus.Labels{"key": key}).Set(float64(stat.Size))
 	return true, stat.ETag, nil
 }
 
@@ -203,6 +210,14 @@ func resolveKey(urlPath string) string {
 	return "" // default
 }
 
+func logHttp(m *metrics, err string, r *http.Request, status string) {
+	log.Info().Msgf("%s %s %s %s %s", status, r.Method, r.URL.Path, r.RemoteAddr, r.UserAgent())
+	m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": status, "useragent": r.UserAgent()}).Inc()
+	if status != "200" {
+		log.Error().Msg(err)
+	}
+}
+
 func main() {
 	flag.Parse()
 
@@ -233,23 +248,20 @@ func main() {
 				log.Debug().Msgf("{'%s': '%s'}", name, value)
 			}
 		}
-		log.Info().Msgf("Received request: %s %s from %s\n",
-			r.Method, r.URL.Path, r.RemoteAddr)
 
 		key := resolveKey(r.URL.Path)
 		val, ok := data.Get(fmt.Sprintf("%s.json", key))
 		if !ok {
-			log.Error().Err(err)
-			m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": "404", "useragent": r.UserAgent()}).Inc()
+			logHttp(m, "not found", r, "404")
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+
 		hash := sha256.New()
 		valReader := strings.NewReader(val)
 		_, err = io.Copy(hash, valReader)
 		if err != nil {
-			log.Error().Err(err)
-			m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": "500", "useragent": r.UserAgent()}).Inc()
+			logHttp(m, err.Error(), r, "500")
 			http.Error(w, errStr, http.StatusInternalServerError)
 			return
 		}
@@ -259,11 +271,10 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": "200", "useragent": r.UserAgent()}).Inc()
+		logHttp(m, "", r, "200")
 		_, err = io.WriteString(w, val)
 		if err != nil {
-			log.Error().Err(err)
-			m.httpRequests.With(prometheus.Labels{"path": r.URL.Path, "method": r.Method, "status": "500", "useragent": r.UserAgent()}).Inc()
+			logHttp(m, err.Error(), r, "500")
 			http.Error(w, errStr, http.StatusInternalServerError)
 			return
 		}
