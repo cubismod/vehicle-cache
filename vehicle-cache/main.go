@@ -163,7 +163,7 @@ func checkUpdates(data *haxmap.Map[string, string], prefix string, metrics *metr
 				runsSinceLastUpdate = 0
 			}
 		}
-		if runsSinceLastUpdate >= 60 {
+		if runsSinceLastUpdate >= 120 {
 			// Reset vehicles JSON if needed.
 			vehiclesPath := fmt.Sprintf("%s%s", prefix, files[2].local)
 			data.Set(vehiclesPath, "{\"type\": \"FeatureCollection\", \"features\": []}")
