@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/CAFxX/httpcompression v0.0.9
 	github.com/alphadose/haxmap v1.4.1
-	github.com/minio/minio-go/v7 v7.0.93
+	github.com/minio/minio-go/v7 v7.0.94
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.22.0
 	github.com/rs/zerolog v1.34.0
